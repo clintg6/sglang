@@ -542,7 +542,16 @@ class DenoisingStage(PipelineStage):
                     ).contiguous()
                     sharded_tensor = sharded_tensor[:, :, rank_in_sp_group, :, :, :]
                     return sharded_tensor, True
-            if tensor.dim() == 3:
+            elif tensor.dim() == 4:
+                print(f"FFFFFFFFFFFFF")
+                # FLUX only
+                sharded_tensor = rearrange(
+                    tensor, "b (n s) c -> b n s c", n=sp_world_size
+                ).contiguous()
+                sharded_tensor = sharded_tensor[:, :, rank_in_sp_group, :, :, :]
+                return sharded_tensor, True
+            elif tensor.dim() == 3:
+                # Qwen-Image Only
                 # Image latents packed as [B, S, D] -> shard S across SP
                 seq_len = tensor.shape[1]
                 if seq_len > 0:
@@ -587,6 +596,8 @@ class DenoisingStage(PipelineStage):
             # For image latents [B, S_local, D], gather along sequence dim=1
             if latents.dim() == 5:
                 latents = sequence_model_parallel_all_gather(latents, dim=2)
+            elif latents.dim() == 4:
+                latents = sequence_model_parallel_all_gather(latents, dim=1)
             elif latents.dim() == 3:
                 latents = sequence_model_parallel_all_gather(latents, dim=1)
                 # Remove padding if applied

@@ -135,7 +135,25 @@ class QwenImagePipelineConfig(PipelineConfig):
             txt_freqs.imag.to(dtype=dtype),
         )
 
-        # FIXME: video models handles sp internally in `_forward_cached_from_grid`, while for image-models we do this manually
+        # Pad image RoPE to make total tokens divisible by SP degree (if enabled)
+        try:
+            from sglang.multimodal_gen.runtime.distributed.parallel_state import (
+                get_sp_world_size,
+            )
+
+            sp_world_size = get_sp_world_size()
+        except Exception:
+            sp_world_size = 1
+        if sp_world_size and sp_world_size > 1:
+            total_tokens = img_cos.shape[0]
+            pad_len = (sp_world_size - (total_tokens % sp_world_size)) % sp_world_size
+            if pad_len > 0:
+                pad_cos = img_cos[-1:, :].repeat(pad_len, 1)
+                pad_sin = img_sin[-1:, :].repeat(pad_len, 1)
+                img_cos = torch.cat([img_cos, pad_cos], dim=0)
+                img_sin = torch.cat([img_sin, pad_sin], dim=0)
+
+        # FIXME: video models handle SP internally in `_forward_cached_from_grid`, while for image models we do this manually
         img_cos = shard_rotary_emb_for_sp(img_cos)
         img_sin = shard_rotary_emb_for_sp(img_sin)
         return (img_cos, img_sin), (txt_cos, txt_sin)
