@@ -59,6 +59,10 @@ def postprocess_text(output: BaseEncoderOutput, _text_inputs) -> torch.tensor:
     raise NotImplementedError
 
 
+def shard_rotary_emb_for_sp(emb):
+    pass
+
+
 # config for a single pipeline
 @dataclass
 class PipelineConfig:

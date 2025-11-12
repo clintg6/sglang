@@ -17,6 +17,7 @@ from sglang.multimodal_gen.configs.pipelines.base import (
     ModelTaskType,
     PipelineConfig,
     preprocess_text,
+    shard_rotary_emb_for_sp,
 )
 from sglang.multimodal_gen.configs.pipelines.hunyuan import (
     clip_postprocess_text,
@@ -135,8 +136,10 @@ class FluxPipelineConfig(PipelineConfig):
         )
         ids = torch.cat([txt_ids, img_ids], dim=0).to(device=device)
         # NOTE(mick): prepare it here, to avoid unnecessary computations
-        freqs_cis = rotary_emb.forward(ids)
-        return freqs_cis
+        cos, sin = rotary_emb.forward(ids)
+        cos = shard_rotary_emb_for_sp(cos)
+        sin = shard_rotary_emb_for_sp(sin)
+        return cos, sin
 
     def post_denoising_loop(self, latents, batch):
         # unpack latents for flux

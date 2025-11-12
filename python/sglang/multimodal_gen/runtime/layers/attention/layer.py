@@ -309,7 +309,7 @@ class USPAttention(nn.Module):
         causal: bool = False,
         supported_attention_backends: set[AttentionBackendEnum] | None = None,
         prefix: str = "",
-        dropout_p: float = 0.0,
+        dropout_rate: float = 0.0,
         **extra_impl_args,
     ) -> None:
         super().__init__()
@@ -341,7 +341,7 @@ class USPAttention(nn.Module):
         self.backend = backend_name_to_enum(attn_backend.get_name())
         self.dtype = dtype
         self.causal = causal
-        self.dropout_p = dropout_p
+        self.dropout_p = dropout_rate
 
     def forward(
         self,

@@ -542,34 +542,15 @@ class DenoisingStage(PipelineStage):
                     ).contiguous()
                     sharded_tensor = sharded_tensor[:, :, rank_in_sp_group, :, :, :]
                     return sharded_tensor, True
-            elif tensor.dim() == 3:
-                # Image latents: [B, S, D] where S = (H2 * W2), shard by rows to align with RoPE slicing
-                try:
-                    vae_scale_factor = (
-                        self.server_args.pipeline_config.vae_config.arch_config.vae_scale_factor
-                    )
-                    h2 = batch.height // vae_scale_factor // 2
-                    w2 = batch.width // vae_scale_factor // 2
-                    seq_len = tensor.shape[1]
-                    # Validate inferred token length
-                    if (
-                        h2 > 0
-                        and w2 > 0
-                        and h2 * w2 == seq_len
-                        and h2 % sp_world_size == 0
-                    ):
-                        rows_per_rank = h2 // sp_world_size
-                        start_row = rank_in_sp_group * rows_per_rank
-                        end_row = start_row + rows_per_rank
-                        start_token = start_row * w2
-                        end_token = end_row * w2
-                        sharded_tensor = tensor[:, start_token:end_token, :]
-                        return sharded_tensor, True
-                except Exception:
-                    print(f"falling back")
-                    # Fallback to no sharding if shape inference fails
-                    return tensor, False
-
+            if tensor.dim() == 3:
+                # Image latents packed as [B, S, D] -> shard S across SP
+                seq_len = tensor.shape[1]
+                if seq_len > 0 and seq_len % sp_world_size == 0:
+                    sharded_tensor = rearrange(
+                        tensor, "b (n s) d -> b n s d", n=sp_world_size
+                    ).contiguous()
+                    sharded_tensor = sharded_tensor[:, rank_in_sp_group, :, :]
+                    return sharded_tensor, True
             # For 4D image tensors or unsharded 5D tensors, return as is.
             return tensor, False
 
@@ -589,18 +570,23 @@ class DenoisingStage(PipelineStage):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Gather latents after Sequence Parallelism if they were sharded."""
         if get_sp_world_size() > 1 and getattr(batch, "did_sp_shard_latents", False):
-            # For video latents [B, C, T_local, H, W], gather on dim=2
-            # For image latents [B, S_local, D], gather on dim=1
-            gather_dim = 2 if latents.dim() == 5 else 1
-            latents = sequence_model_parallel_all_gather(latents, dim=gather_dim)
+            # For video latents [B, C, T_local, H, W], gather along time dim=2
+            # For image latents [B, S_local, D], gather along sequence dim=1
+            if latents.dim() == 5:
+                latents = sequence_model_parallel_all_gather(latents, dim=2)
+            elif latents.dim() == 3:
+                latents = sequence_model_parallel_all_gather(latents, dim=1)
+            else:
+                # Fallback to original behavior if unexpected rank
+                latents = sequence_model_parallel_all_gather(latents, dim=2)
             if trajectory_tensor is not None:
                 # trajectory_tensor shapes:
-                # - Video: [B, num_steps, C, T_local, H, W] -> gather on dim=3
-                # - Image: [B, num_steps, S_local, D] -> gather on dim=2
+                # - video: [b, num_steps, c, t_local, h, w] -> gather on dim=3
+                # - image: [b, num_steps, s_local, d] -> gather on dim=2
                 trajectory_tensor = trajectory_tensor.to(get_local_torch_device())
-                traj_gather_dim = 3 if trajectory_tensor.dim() == 6 else 2
+                gather_dim = 3 if trajectory_tensor.dim() >= 5 else 2
                 trajectory_tensor = sequence_model_parallel_all_gather(
-                    trajectory_tensor, dim=traj_gather_dim
+                    trajectory_tensor, dim=gather_dim
                 )
         return latents, trajectory_tensor
 
