@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 from diffusers.image_processor import VaeImageProcessor
+from einops import rearrange
 
 from sglang.multimodal_gen.configs.models import (
     DiTConfig,
@@ -18,6 +19,11 @@ from sglang.multimodal_gen.configs.models import (
 )
 from sglang.multimodal_gen.configs.models.encoders import BaseEncoderOutput
 from sglang.multimodal_gen.configs.utils import update_config_from_args
+from sglang.multimodal_gen.runtime.distributed import (
+    get_sp_parallel_rank,
+    get_sp_world_size,
+    sequence_model_parallel_all_gather,
+)
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.multimodal_gen.utils import (
     FlexibleArgumentParser,
@@ -192,6 +198,23 @@ class PipelineConfig:
     # called after latents are prepared
     def maybe_pack_latents(self, latents, batch_size, batch):
         return latents
+
+    def gather_latents_for_sp(self, latents):
+        # For video latents [B, C, T_local, H, W], gather along time dim=2
+        latents = sequence_model_parallel_all_gather(latents, dim=2)
+        return latents
+
+    def shard_latents_for_sp(self, batch, latents):
+        # general logic for video models
+        sp_world_size, rank_in_sp_group = get_sp_world_size(), get_sp_parallel_rank()
+        time_dim = latents.shape[2]
+        if time_dim > 0 and time_dim % sp_world_size == 0:
+            sharded_tensor = rearrange(
+                latents, "b c (n t) h w -> b c n t h w", n=sp_world_size
+            ).contiguous()
+            sharded_tensor = sharded_tensor[:, :, rank_in_sp_group, :, :, :]
+            return sharded_tensor, True
+        return latents, False
 
     def get_pos_prompt_embeds(self, batch):
         return batch.prompt_embeds

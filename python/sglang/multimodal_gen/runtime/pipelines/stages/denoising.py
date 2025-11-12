@@ -533,50 +533,15 @@ class DenoisingStage(PipelineStage):
         ) -> tuple[torch.Tensor | None, bool]:
             if tensor is None:
                 return None, False
+            tensor, sharded = self.server_args.pipeline_config.shard_latents_for_sp(
+                batch, tensor
+            )
+            return tensor, sharded
 
-            if tensor.dim() == 5:
-                time_dim = tensor.shape[2]
-                if time_dim > 0 and time_dim % sp_world_size == 0:
-                    sharded_tensor = rearrange(
-                        tensor, "b c (n t) h w -> b c n t h w", n=sp_world_size
-                    ).contiguous()
-                    sharded_tensor = sharded_tensor[:, :, rank_in_sp_group, :, :, :]
-                    return sharded_tensor, True
-            elif tensor.dim() == 4:
-                print(f"FFFFFFFFFFFFF")
-                # FLUX only
-                sharded_tensor = rearrange(
-                    tensor, "b (n s) c -> b n s c", n=sp_world_size
-                ).contiguous()
-                sharded_tensor = sharded_tensor[:, :, rank_in_sp_group, :, :, :]
-                return sharded_tensor, True
-            elif tensor.dim() == 3:
-                # Qwen-Image Only
-                # Image latents packed as [B, S, D] -> shard S across SP
-                seq_len = tensor.shape[1]
-                if seq_len > 0:
-                    # Pad to next multiple of SP degree if needed
-                    if seq_len % sp_world_size != 0:
-                        pad_len = sp_world_size - (seq_len % sp_world_size)
-                        pad = torch.zeros(
-                            (tensor.shape[0], pad_len, tensor.shape[2]),
-                            dtype=tensor.dtype,
-                            device=tensor.device,
-                        )
-                        tensor = torch.cat([tensor, pad], dim=1)
-                        # Record padding length for later unpad
-                        batch.sp_seq_pad = (
-                            int(getattr(batch, "sp_seq_pad", 0)) + pad_len
-                        )
-                    sharded_tensor = rearrange(
-                        tensor, "b (n s) d -> b n s d", n=sp_world_size
-                    ).contiguous()
-                    sharded_tensor = sharded_tensor[:, rank_in_sp_group, :, :]
-                    return sharded_tensor, True
-            # For 4D image tensors or unsharded 5D tensors, return as is.
-            return tensor, False
-
+        print(f"before sharding {batch.latents.shape=}")
         batch.latents, did_shard = _shard_tensor(batch.latents)
+        print(f"after sharding {batch.latents.shape=}")
+
         batch.did_sp_shard_latents = did_shard
 
         # image_latent is sharded independently, but the decision to all-gather later
@@ -592,25 +557,7 @@ class DenoisingStage(PipelineStage):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Gather latents after Sequence Parallelism if they were sharded."""
         if get_sp_world_size() > 1 and getattr(batch, "did_sp_shard_latents", False):
-            # For video latents [B, C, T_local, H, W], gather along time dim=2
-            # For image latents [B, S_local, D], gather along sequence dim=1
-            if latents.dim() == 5:
-                latents = sequence_model_parallel_all_gather(latents, dim=2)
-            elif latents.dim() == 4:
-                latents = sequence_model_parallel_all_gather(latents, dim=1)
-            elif latents.dim() == 3:
-                latents = sequence_model_parallel_all_gather(latents, dim=1)
-                # Remove padding if applied
-                if (
-                    hasattr(batch, "raw_latent_shape")
-                    and len(batch.raw_latent_shape) >= 2
-                ):
-                    orig_s = batch.raw_latent_shape[1]
-                    if latents.shape[1] > orig_s:
-                        latents = latents[:, :orig_s, :]
-            else:
-                # Fallback to original behavior if unexpected rank
-                latents = sequence_model_parallel_all_gather(latents, dim=2)
+            latents = self.server_args.pipeline_config.gather_latents_for_sp(latents)
             if trajectory_tensor is not None:
                 # trajectory_tensor shapes:
                 # - video: [b, num_steps, c, t_local, h, w] -> gather on dim=3

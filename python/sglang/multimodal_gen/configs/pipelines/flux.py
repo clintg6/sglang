@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import torch
+from einops import rearrange
 
 from sglang.multimodal_gen.configs.models import DiTConfig, EncoderConfig, VAEConfig
 from sglang.multimodal_gen.configs.models.dits.flux import FluxConfig
@@ -22,6 +23,12 @@ from sglang.multimodal_gen.configs.pipelines.base import (
 from sglang.multimodal_gen.configs.pipelines.hunyuan import (
     clip_postprocess_text,
     clip_preprocess_text,
+)
+from sglang.multimodal_gen.configs.pipelines.qwen_image import _pack_latents
+from sglang.multimodal_gen.runtime.distributed import (
+    get_sp_parallel_rank,
+    get_sp_world_size,
+    sequence_model_parallel_all_gather,
 )
 
 
@@ -90,13 +97,22 @@ class FluxPipelineConfig(PipelineConfig):
         width = 2 * (batch.width // (self.vae_config.arch_config.vae_scale_factor * 2))
         num_channels_latents = self.dit_config.arch_config.in_channels // 4
         # pack latents
-        latents = latents.view(
-            batch_size, num_channels_latents, height // 2, 2, width // 2, 2
-        )
-        latents = latents.permute(0, 2, 4, 1, 3, 5)
-        latents = latents.reshape(
-            batch_size, (height // 2) * (width // 2), num_channels_latents * 4
-        )
+        return _pack_latents(latents, batch_size, num_channels_latents, height, width)
+
+    def shard_latents_for_sp(self, batch, latents):
+        sp_world_size, rank_in_sp_group = get_sp_world_size(), get_sp_parallel_rank()
+        sequence_dim = latents.shape[1]
+        if sequence_dim > 0 and sequence_dim % sp_world_size == 0:
+            sharded_tensor = rearrange(
+                latents, "b (n s) d -> b n s d", n=sp_world_size
+            ).contiguous()
+            sharded_tensor = sharded_tensor[:, rank_in_sp_group, :, :]
+            return sharded_tensor, True
+        return latents, False
+
+    def gather_latents_for_sp(self, latents):
+        # For image latents [B, S_local, D], gather along sequence dim=1
+        latents = sequence_model_parallel_all_gather(latents, dim=1)
         return latents
 
     def get_pos_prompt_embeds(self, batch):
@@ -134,11 +150,16 @@ class FluxPipelineConfig(PipelineConfig):
             original_width=width,
             device=device,
         )
-        ids = torch.cat([txt_ids, img_ids], dim=0).to(device=device)
+
         # NOTE(mick): prepare it here, to avoid unnecessary computations
-        cos, sin = rotary_emb.forward(ids)
-        cos = shard_rotary_emb_for_sp(cos)
-        sin = shard_rotary_emb_for_sp(sin)
+        img_cos, img_sin = rotary_emb.forward(img_ids)
+        img_cos = shard_rotary_emb_for_sp(img_cos)
+        img_sin = shard_rotary_emb_for_sp(img_sin)
+
+        txt_cos, txt_sin = rotary_emb.forward(txt_ids)
+
+        cos = torch.cat([txt_cos, img_cos], dim=0).to(device=device)
+        sin = torch.cat([txt_sin, img_sin], dim=0).to(device=device)
         return cos, sin
 
     def post_denoising_loop(self, latents, batch):
