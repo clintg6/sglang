@@ -545,7 +545,20 @@ class DenoisingStage(PipelineStage):
             if tensor.dim() == 3:
                 # Image latents packed as [B, S, D] -> shard S across SP
                 seq_len = tensor.shape[1]
-                if seq_len > 0 and seq_len % sp_world_size == 0:
+                if seq_len > 0:
+                    # Pad to next multiple of SP degree if needed
+                    if seq_len % sp_world_size != 0:
+                        pad_len = sp_world_size - (seq_len % sp_world_size)
+                        pad = torch.zeros(
+                            (tensor.shape[0], pad_len, tensor.shape[2]),
+                            dtype=tensor.dtype,
+                            device=tensor.device,
+                        )
+                        tensor = torch.cat([tensor, pad], dim=1)
+                        # Record padding length for later unpad
+                        batch.sp_seq_pad = (
+                            int(getattr(batch, "sp_seq_pad", 0)) + pad_len
+                        )
                     sharded_tensor = rearrange(
                         tensor, "b (n s) d -> b n s d", n=sp_world_size
                     ).contiguous()
@@ -576,6 +589,14 @@ class DenoisingStage(PipelineStage):
                 latents = sequence_model_parallel_all_gather(latents, dim=2)
             elif latents.dim() == 3:
                 latents = sequence_model_parallel_all_gather(latents, dim=1)
+                # Remove padding if applied
+                if (
+                    hasattr(batch, "raw_latent_shape")
+                    and len(batch.raw_latent_shape) >= 2
+                ):
+                    orig_s = batch.raw_latent_shape[1]
+                    if latents.shape[1] > orig_s:
+                        latents = latents[:, :orig_s, :]
             else:
                 # Fallback to original behavior if unexpected rank
                 latents = sequence_model_parallel_all_gather(latents, dim=2)
@@ -588,6 +609,10 @@ class DenoisingStage(PipelineStage):
                 trajectory_tensor = sequence_model_parallel_all_gather(
                     trajectory_tensor, dim=gather_dim
                 )
+                if gather_dim == 2 and hasattr(batch, "raw_latent_shape"):
+                    orig_s = batch.raw_latent_shape[1]
+                    if trajectory_tensor.shape[2] > orig_s:
+                        trajectory_tensor = trajectory_tensor[:, :, :orig_s, :]
         return latents, trajectory_tensor
 
     def start_profile(self, batch: Req):

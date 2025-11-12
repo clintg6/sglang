@@ -355,7 +355,7 @@ class QwenImageCrossAttention(nn.Module):
         joint_value = torch.cat([txt_value, img_value], dim=1)
 
         # Compute joint attention
-        joint_hidden_states, _ = self.attn(
+        joint_hidden_states = self.attn(
             joint_query,
             joint_key,
             joint_value,

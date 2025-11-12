@@ -134,6 +134,7 @@ class QwenImagePipelineConfig(PipelineConfig):
             txt_freqs.real.to(dtype=dtype),
             txt_freqs.imag.to(dtype=dtype),
         )
+
         # FIXME: video models handles sp internally in `_forward_cached_from_grid`, while for image-models we do this manually
         img_cos = shard_rotary_emb_for_sp(img_cos)
         img_sin = shard_rotary_emb_for_sp(img_sin)
@@ -192,6 +193,10 @@ class QwenImagePipelineConfig(PipelineConfig):
         vae_scale_factor = self.vae_config.arch_config.vae_scale_factor
         height = 2 * (int(batch.height) // (vae_scale_factor * 2))
         width = 2 * (int(batch.width) // (vae_scale_factor * 2))
+        # If SP padding was applied, remove extra tokens before reshaping
+        target_tokens = (height // 2) * (width // 2)
+        if latents.shape[1] != target_tokens:
+            latents = latents[:, :target_tokens, :]
 
         latents = latents.view(batch_size, height // 2, width // 2, channels // 4, 2, 2)
         latents = latents.permute(0, 3, 1, 4, 2, 5)

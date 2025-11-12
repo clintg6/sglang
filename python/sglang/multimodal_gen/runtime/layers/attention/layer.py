@@ -351,7 +351,7 @@ class USPAttention(nn.Module):
         replicated_q: torch.Tensor | None = None,
         replicated_k: torch.Tensor | None = None,
         replicated_v: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> torch.Tensor:
         """
         Forward pass for USPAttention.
 
@@ -367,7 +367,7 @@ class USPAttention(nn.Module):
         if get_sequence_parallel_world_size() == 1:
             # No sequence parallelism, just run local attention.
             out = self.attn_impl.forward(q, k, v, ctx_attn_metadata)
-            return out, None
+            return out
 
         # Ulysses-style All-to-All for sequence/head sharding
         if get_ulysses_parallel_world_size() > 1:
@@ -395,4 +395,4 @@ class USPAttention(nn.Module):
             # -> [B, S_local, H, D]
             out = _usp_output_all_to_all(out, head_dim=2)
 
-        return out, None
+        return out

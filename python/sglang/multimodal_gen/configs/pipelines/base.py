@@ -60,7 +60,33 @@ def postprocess_text(output: BaseEncoderOutput, _text_inputs) -> torch.tensor:
 
 
 def shard_rotary_emb_for_sp(emb):
-    pass
+    """
+    Shard rotary embeddings [S, D] along sequence for SP.
+    If S is not divisible by SP degree, pad by repeating the last row.
+    """
+    # Sequence Parallelism: slice image RoPE to local shard if enabled
+    try:
+        from sglang.multimodal_gen.runtime.distributed.parallel_state import (
+            get_sp_parallel_rank,
+            get_sp_world_size,
+        )
+
+        sp_world_size = get_sp_world_size()
+    except Exception:
+        sp_world_size = 1
+    if sp_world_size and sp_world_size > 1:
+        try:
+            rank = get_sp_parallel_rank()
+        except Exception:
+            rank = 0
+        total_tokens = emb.shape[0]
+        local_len = total_tokens // sp_world_size
+        start = rank * local_len
+        end = start + local_len
+        emb = emb[start:end]
+        return emb
+    else:
+        return emb
 
 
 # config for a single pipeline
