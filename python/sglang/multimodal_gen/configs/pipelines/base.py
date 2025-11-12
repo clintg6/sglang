@@ -80,13 +80,18 @@ def shard_rotary_emb_for_sp(emb):
         sp_world_size = get_sp_world_size()
     except Exception:
         sp_world_size = 1
+    seq_len = emb.shape[0]
+    if seq_len % sp_world_size != 0:
+        pad_len = sp_world_size - (seq_len % sp_world_size)
+        pad = emb[-1:].repeat(pad_len, 1)
+        emb = torch.cat([emb, pad], dim=0)
     if sp_world_size and sp_world_size > 1:
         try:
             rank = get_sp_parallel_rank()
         except Exception:
             rank = 0
-        total_tokens = emb.shape[0]
-        local_len = total_tokens // sp_world_size
+        seq_len = emb.shape[0]
+        local_len = seq_len // sp_world_size
         start = rank * local_len
         end = start + local_len
         emb = emb[start:end]

@@ -332,7 +332,7 @@ class DenoisingStage(PipelineStage):
             )
 
         # Handle sequence parallelism AFTER TI2V processing
-        self._preprocess_sp_latents(batch)
+        self._preprocess_sp_latents(batch, server_args)
         latents = batch.latents
 
         # Shard z and reserved_frames_mask for TI2V if SP is enabled
@@ -521,7 +521,7 @@ class DenoisingStage(PipelineStage):
                 torch.mps.current_allocated_memory(),
             )
 
-    def _preprocess_sp_latents(self, batch: Req):
+    def _preprocess_sp_latents(self, batch: Req, server_args: ServerArgs):
         """Shard latents for Sequence Parallelism if applicable."""
         sp_world_size, rank_in_sp_group = get_sp_world_size(), get_sp_parallel_rank()
         if get_sp_world_size() <= 1:
@@ -538,15 +538,16 @@ class DenoisingStage(PipelineStage):
             )
             return tensor, sharded
 
-        print(f"before sharding {batch.latents.shape=}")
         batch.latents, did_shard = _shard_tensor(batch.latents)
-        print(f"after sharding {batch.latents.shape=}")
 
         batch.did_sp_shard_latents = did_shard
 
-        # image_latent is sharded independently, but the decision to all-gather later
-        # is based on whether the main `latents` was sharded.
-        if batch.image_latent is not None:
+        # For I2I tasks like QwenImageEdit, the image_latent (input image) should be
+        # replicated on all SP ranks, not sharded, as it provides global context.
+        if (
+            server_args.pipeline_config.task_type != ModelTaskType.I2I
+            and batch.image_latent is not None
+        ):
             batch.image_latent, _ = _shard_tensor(batch.image_latent)
 
     def _postprocess_sp_latents(
