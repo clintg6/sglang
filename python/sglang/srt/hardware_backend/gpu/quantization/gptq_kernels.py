@@ -48,6 +48,108 @@ except Exception:
     pass
 
 
+class GPTQTritonLinearKernel:
+    """Hybrid ROCm GPTQ kernel: HIP skinny decode plus Triton prefill."""
+
+    _SKINNY_MAX_BATCH_SIZE = 5
+    _SKINNY_LDS_ELEMENTS = 64 * 1024 // 2
+    _SKINNY_GROUP_SIZES = {32, 64, 128}
+
+    def __init__(self, quant_config: Optional[QuantizationConfig] = None):
+        if quant_config is None:
+            raise ValueError("GPTQ Triton requires a quantization config")
+        if quant_config.weight_bits != 4:
+            raise ValueError(
+                "GPTQ Triton currently supports 4-bit weights only, but got "
+                f"{quant_config.weight_bits}-bit weights."
+            )
+        if quant_config.desc_act:
+            raise ValueError("GPTQ Triton does not support desc_act=True")
+
+        self.quant_config = quant_config
+        self.is_sym = bool(getattr(quant_config, "sym", False))
+        # Kept for compatibility with GPTQLinearScheme's row-parallel setup.
+        self.use_shuffle = False
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        from sglang.kernels.ops.quantization.gptq_triton import (
+            repack_gptq_w4_to_skinny,
+        )
+
+        k = layer.qweight.shape[0] * 8
+        qweight = repack_gptq_w4_to_skinny(
+            layer.qweight.data.contiguous(), k
+        )
+        scales = layer.scales.data.t().contiguous()
+
+        if self.is_sym:
+            qzeros = torch.empty(
+                0, dtype=torch.int32, device=layer.qzeros.device
+            )
+        else:
+            packed_zeros = layer.qzeros.data
+            if self.quant_config.checkpoint_format != "gptq_v2":
+                raw_zeros = torch.zeros_like(packed_zeros)
+                for shift in range(0, 32, 4):
+                    nibble = ((packed_zeros >> shift) + 1) & 0xF
+                    raw_zeros |= nibble << shift
+                packed_zeros = raw_zeros
+            qzeros = packed_zeros.t().contiguous()
+
+        replace_parameter(layer, "qweight", qweight)
+        replace_parameter(layer, "qzeros", qzeros)
+        replace_parameter(layer, "scales", scales)
+        replace_parameter(
+            layer,
+            "g_idx",
+            torch.empty(0, dtype=torch.int32, device=layer.qweight.device),
+        )
+
+    def apply(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        from sglang.kernels.ops.quantization.gptq_triton import (
+            gptq_w4a16_skinny_gemm,
+        )
+
+        input_2d = x.reshape(-1, x.shape[-1]).contiguous()
+        m, k = input_2d.shape
+        out_shape = x.shape[:-1] + (layer.qweight.shape[0],)
+        use_skinny = (
+            m <= self._SKINNY_MAX_BATCH_SIZE
+            and k * m <= self._SKINNY_LDS_ELEMENTS
+            and self.quant_config.group_size in self._SKINNY_GROUP_SIZES
+            and hasattr(torch.ops.sgl_kernel, "wvSplitK_int4_g")
+        )
+
+        qzeros = None if self.is_sym else layer.qzeros
+        if use_skinny:
+            cu_count = torch.cuda.get_device_properties(input_2d.device).multi_processor_count
+            output = torch.ops.sgl_kernel.wvSplitK_int4_g.default(
+                layer.qweight,
+                input_2d,
+                layer.scales,
+                qzeros,
+                bias,
+                cu_count,
+                self.quant_config.group_size,
+            )
+        else:
+            output = gptq_w4a16_skinny_gemm(
+                input=input_2d,
+                qweight=layer.qweight,
+                scales=layer.scales,
+                group_size=self.quant_config.group_size,
+                qzeros=qzeros,
+            )
+            if bias is not None:
+                output.add_(bias)
+        return output.reshape(out_shape)
+
+
 @dataclass
 class MarlinLinearLayerConfig:
     full_weight_shape: tuple[int, int]  # [in, out]

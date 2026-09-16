@@ -133,7 +133,10 @@ def awq_gemm_kernel(
     pid_m = pid // num_pid_n
     pid_n = pid % num_pid_n
 
-    accumulator_dtype = c_ptr.type.element_ty
+    # Triton does not support bf16 accumulation in tl.dot.
+    accumulator_dtype = (
+        tl.float32 if c_ptr.type.element_ty == tl.bfloat16 else c_ptr.type.element_ty
+    )
 
     # NOTE: This doesn't work in TRITON_INTERPRET=1 mode.  Use below instead.
     # accumulator = tl.arange(0, BLOCK_SIZE_N)

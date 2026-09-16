@@ -50,6 +50,8 @@ sources = [
     "csrc/elementwise/dsv4_norm_rope.cu",
     # Native HIP implementation of the same three ops exposed by topk.cu.
     "csrc/elementwise/topk.hip",
+    "csrc/gemm/skinny_gemms.cu",
+    "csrc/gemm/skinny_gemms_int4.cu",
     "csrc/grammar/apply_token_bitmask_inplace_cuda.cu",
     "csrc/moe/moe_align_kernel.cu",
     "csrc/moe/moe_topk_softmax_kernels.cu",
@@ -75,7 +77,7 @@ if torch.cuda.is_available():
 else:
     print(f"Warning: torch.cuda not available. Using default target: {amdgpu_target}")
 
-if amdgpu_target not in ["gfx942", "gfx950", "gfx1250"]:
+if amdgpu_target not in ["gfx942", "gfx950", "gfx1250", "gfx1151"]:
     print(
         f"Warning: Unsupported GPU architecture detected '{amdgpu_target}'. Expected 'gfx942', 'gfx950', or 'gfx1250'."
     )
@@ -104,6 +106,8 @@ hipcc_flags = [
     "-DENABLE_FP8",
     fp8_macro,
     f"-DSGL_TOPK_DYNAMIC_SMEM_BYTES={topk_dynamic_smem_bytes}",
+    # gfx1151 is wave32; pin both compiler passes to it (see utils.h below).
+    *(["-DSGL_ROCM_WARP_SIZE=32"] if amdgpu_target == "gfx1151" else []),
 ]
 
 ext_modules = [

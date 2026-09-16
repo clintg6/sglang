@@ -477,7 +477,16 @@ class UnquantizedLinearMethod(LinearMethodBase):
                 output = output.view(x_shapes[0], x_shapes[1], -1)
             return output
 
-        elif _use_aiter and type(layer.weight.data) is torch.Tensor:
+        if _is_hip:
+            from sglang.srt.layers.rocm_wv_split_k import (
+                rocm_wv_split_k,
+                should_use_rocm_wv_split_k,
+            )
+
+            if should_use_rocm_wv_split_k(x, layer.weight, bias):
+                return rocm_wv_split_k(x, layer.weight, bias)
+
+        if _use_aiter and type(layer.weight.data) is torch.Tensor:
             return tgemm.mm(x, layer.weight, bias, otype=x.dtype)
 
         elif (

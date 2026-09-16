@@ -34,6 +34,20 @@ TORCH_LIBRARY_EXPAND(sgl_kernel, m) {
   m.def("gelu_quick(Tensor! out, Tensor input) -> ()");
   m.impl("gelu_quick", torch::kCUDA, &gelu_quick);
 
+  /*
+   * From csrc/gemm
+   */
+  m.def(
+      "wvSplitK(Tensor in_a, Tensor in_b, Tensor? in_bias, "
+      "int cu_count) -> Tensor");
+  m.impl("wvSplitK", torch::kCUDA, &wvSplitK);
+
+  m.def(
+      "wvSplitK_int4_g(Tensor in_a, Tensor in_b, Tensor in_scale, "
+      "Tensor? in_zero_points, Tensor? in_bias, int cu_count, "
+      "int group_size) -> Tensor");
+  m.impl("wvSplitK_int4_g", torch::kCUDA, &wvSplitK_int4_g);
+
   m.def("fast_topk(Tensor score, Tensor indices, Tensor lengths, Tensor? row_starts) -> ()");
   m.impl("fast_topk", torch::kCUDA, &fast_topk_interface);
 

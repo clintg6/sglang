@@ -25,6 +25,40 @@ def fp8_scaled_mm(mat_a, mat_b, scales_a, scales_b, out_dtype, bias=None):
     )
 
 
+def wvSplitK(
+    weight: torch.Tensor,
+    input: torch.Tensor,
+    cu_count: int,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    return torch.ops.sgl_kernel.wvSplitK.default(
+        weight,
+        input,
+        bias,
+        cu_count,
+    )
+
+
+def wvSplitK_int4_g(
+    packed_weight: torch.Tensor,
+    input: torch.Tensor,
+    scales: torch.Tensor,
+    cu_count: int,
+    group_size: int,
+    zero_points: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    return torch.ops.sgl_kernel.wvSplitK_int4_g.default(
+        packed_weight,
+        input,
+        scales,
+        zero_points,
+        bias,
+        cu_count,
+        group_size,
+    )
+
+
 def sgl_per_token_group_quant_8bit(
     input: torch.Tensor,
     output_q: torch.Tensor,

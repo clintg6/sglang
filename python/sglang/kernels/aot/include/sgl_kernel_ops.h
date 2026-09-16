@@ -205,6 +205,19 @@ void dsv4_fused_q_indexer_rope_hadamard_quant(
 /*
  * From csrc/gemm
  */
+torch::Tensor wvSplitK(
+    const at::Tensor& in_a,
+    const at::Tensor& in_b,
+    const std::optional<at::Tensor>& in_bias,
+    int64_t cu_count);
+torch::Tensor wvSplitK_int4_g(
+    const at::Tensor& in_a,
+    const at::Tensor& in_b,
+    const at::Tensor& in_scale,
+    const std::optional<at::Tensor>& in_zero_points,
+    const std::optional<at::Tensor>& in_bias,
+    int64_t cu_count,
+    int64_t group_size);
 torch::Tensor int8_scaled_mm(
     const torch::Tensor& mat_a,
     const torch::Tensor& mat_b,

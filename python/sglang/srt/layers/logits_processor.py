@@ -50,6 +50,10 @@ from sglang.srt.layers.logprob_processor import (
     get_token_ids_logprobs_raw,
     get_top_logprobs_raw,
 )
+from sglang.srt.layers.rocm_wv_split_k import (
+    rocm_wv_split_k,
+    should_use_rocm_wv_split_k,
+)
 from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.model_executor.forward_batch_info import (
     CaptureHiddenMode,
@@ -922,6 +926,10 @@ class LogitsProcessor(nn.Module):
                     None,  # bias
                     True,  # is_vnni
                 )
+            elif should_use_rocm_wv_split_k(
+                hidden_states, lm_head.weight, None
+            ):
+                logits = rocm_wv_split_k(hidden_states, lm_head.weight)
             elif self.rl_on_policy_target is not None:
                 # Due to tie-weight, we may not be able to change lm_head's weight dtype
                 logits = torch.matmul(

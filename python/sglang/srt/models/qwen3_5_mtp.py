@@ -30,6 +30,10 @@ from sglang.srt.eplb.expert_location import ModelConfigForExpertLocation
 from sglang.srt.layers.layernorm import GemmaRMSNorm
 from sglang.srt.layers.logits_processor import LogitsProcessor
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+from sglang.srt.layers.rocm_wv_split_k import (
+    rocm_wv_split_k,
+    should_use_rocm_wv_split_k,
+)
 from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -228,7 +232,14 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
 
             hidden_states = torch.cat([input_embeds, hidden_states], dim=-1)
 
-            hidden_states = self.fc(hidden_states)
+            if should_use_rocm_wv_split_k(
+                hidden_states, self.fc.weight, self.fc.bias
+            ):
+                hidden_states = rocm_wv_split_k(
+                    hidden_states, self.fc.weight, self.fc.bias
+                )
+            else:
+                hidden_states = self.fc(hidden_states)
 
             with get_global_expert_distribution_recorder().disable_this_region():
                 hidden_states = self.model(
