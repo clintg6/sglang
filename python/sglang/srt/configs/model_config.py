@@ -1774,7 +1774,13 @@ class ModelConfig:
 
             # Verify quantization configurations.
             if self.quantization is None:
-                self.quantization = quant_method
+                # `--speculative-draft-model-quantization unquant` resolves to
+                # None. The draft shares the target's checkpoint, so detecting
+                # quant_method here would re-quantize a draft the user asked to
+                # leave alone -- and some Quark exports ship a bf16 MTP module
+                # without listing it under `exclude`, making detection wrong.
+                if not (self.is_draft_model and self.is_draft_quantization_explicit):
+                    self.quantization = quant_method
             elif self.quantization != quant_method:
                 # Check if the CLI-specified quantization is compatible with HF config's quant_method
                 is_compatible = preserve_online_draft_quantization or (

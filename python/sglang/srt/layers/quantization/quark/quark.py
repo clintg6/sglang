@@ -23,6 +23,7 @@ from sglang.srt.layers.quantization.quark.schemes import (
     QuarkW4A4MXFP4,
     QuarkW4A4MXFp4MoE,
     QuarkW4A16Int4,
+    QuarkW4A16Int4MoE,
     QuarkW4A8MXFp4MoE,
     QuarkW8A8Fp8,
     QuarkW8A8FP8MoE,
@@ -918,6 +919,9 @@ class QuarkConfig(QuantizationConfig):
                 is_checkpoint_mxfp4_serialized=self.is_prequantized,
                 dequantization_config=self.dequantization_config,
             )
+        elif self._is_int4_w4a16(weight_config, input_config):
+            logger.info_once("Using Quark INT4 W4A16 MoE scheme")
+            return QuarkW4A16Int4MoE(weight_config, input_config)
         elif self._is_mx_w4a8(weight_config, input_config):
             logger.info_once("Using Quark MXFP4-W/FP8-A MoE scheme")
             return QuarkW4A8MXFp4MoE(weight_config, input_config)
